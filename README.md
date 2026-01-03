@@ -1,4 +1,4 @@
-# Skull
+# Skullcrown
 
 Skullcrown multiplayer browser card game. Best played with 3 to 5 people. The game supports more people, but games tend to get very slow in that case.
 
