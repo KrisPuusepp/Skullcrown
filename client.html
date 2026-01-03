@@ -1,0 +1,2050 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta http-equiv="X-UA-Compatible" content="IE=edge">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <link rel="icon" href="images/skull.png">
+    <title>Skullcrown</title>
+    <style>
+        @font-face {
+            font-family: 'Arial';
+            font-style: normal;
+            font-weight: 400;
+            src: url(Arial-Medium.ttf) format('truetype');
+        }
+
+        canvas {
+            /*cursor:none;*/
+            position:inherit;
+        }
+
+        ::-webkit-scrollbar {
+            width: 0;  /* Remove scrollbar space */
+            background: transparent;  /* Optional: just make scrollbar invisible */
+        }
+
+        .loading {
+            font-size: 100px;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            margin: 30px;
+            border: 4px solid black;
+        }
+        button.loading:hover {
+          background-color: #04AA6D;
+          color: white;
+        }
+
+    </style>
+    <script src="socket.io/socket.io.js"></script>
+    <script src="node_modules/jquery/dist/jquery.min.js"></script>
+    <script src="node_modules/konva/konva.min.js"></script>
+</head>
+<body style="background: white; margin: 0px; padding: 0px">
+
+    <div style="text-align: center; vertical-align: middle; position: fixed; top: 50%; left: 50%; -webkit-transform: translate(-50%, -50%); transform: translate(-50%, -50%);">
+        <div id="konva" style="display: inline-block; margin: 0px; vertical-align: middle;"></div>
+    </div>
+
+    <!-- PREVENT ZOOM ON MOBILE SCRIPT -->
+    <script>
+        document.addEventListener('gesturestart', function (e) {
+            e.preventDefault();
+        });
+    </script>
+
+    <!-- UTIL SCRIPT -->
+    <script>
+        function lerp(value1, value2, amount) {
+            amount = amount < 0 ? 0 : amount;
+            amount = amount > 1 ? 1 : amount;
+            return value1 + (value2 - value1) * amount;
+        }
+    </script>
+
+    <script>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+        //NETCODE VARS
+        var socket = null; //set in setup but declared here so its public
+
+
+        //tex
+        var loaded = 0;
+        function increaseLoaded() {
+            loaded++;
+        }
+        var textures = {
+            skull: null,
+            crown: null,
+            gear: null,
+            controller: null,
+            arrowLeft: null,
+            arrowRight: null,
+        };
+        for(var name in textures) {
+            textures[name] = new Image();
+            textures[name].src = "./images/" + name + ".png";
+            textures[name].onload = increaseLoaded;
+        }
+
+        function checkForAllLoaded() {
+            if(loaded == Object.keys(textures).length) {
+                setup();
+            } else {
+                setTimeout(checkForAllLoaded, 100);
+            }
+        }
+        setTimeout(checkForAllLoaded, 100);
+        document.fonts.load("32px Arial");
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+        
+
+        //CLIENT VARS
+        var players = {};
+        var myPlayerID = -1;
+
+
+        var gameInfo = {
+            playing: false,
+            currentTurn: -1,
+            state: "play1st",  // play1st, play, addBid, pick, remove
+            currentBid: -1,
+            currentBidder: -1,
+            spies: [],
+            skullsToTake: 0,
+            eligibleForPoint: true,
+            havePassed: [],
+            canPlayCard: [], // used only on 1st round, otherwise use play and currentTurn
+        }
+        var modeInfo = {
+            mode: "classic",
+            pBGRWidth: 450,
+            pBGRHeight: 250,
+            myBGRWidth: 750,
+            myBGRHeight: 350,
+            cardHandScale: 1,
+            myCardHandScale: 1.5,
+            cardCount: 4,
+            pointsToWin: 2,
+            keepGoingAfterSkull: false,
+            losePointEligibilityAfter: "any",
+        }
+
+        function hasPassed(id) {
+            if(gameInfo.havePassed.indexOf(id) == -1) {
+                return false;
+            } else {
+                return true;
+            }
+        }
+        // NOTE: Only creates the graphic for the card
+        function addCard(insideTex, playerID, cardIndex) {
+            var group = new Konva.Group({listening: true, scale: {x: 1, y: 1}});
+            group.showing = false;
+            group.id = playerID;
+            group.cardIndex = cardIndex;
+            var cardBackground = new Konva.Rect({
+                x: 0,
+                y: 0,
+                width: 64,
+                height: 64,
+                rotation: 45,
+                offset: {x: 32, y: 32},
+                fill: "#FF0000",
+                stroke: "black",
+                strokeWidth: 6,
+                cornerRadius: [5, 5, 5, 5],
+                shadowOffsetX : 3,
+                shadowOffsetY : 3,
+                listening: true,
+            });
+            cardBackground.on("click tap", () => {
+                if(!players.hasOwnProperty(group.id)) return;
+                if(gameInfo.playing && (gameInfo.currentTurn == myPlayerID || gameInfo.canPlayCard.indexOf(myPlayerID) != -1)) {
+                    // Picking your own cards. currentTurn or the play1st canPlayCard array
+                    if(group.id == myPlayerID) {
+                        if((gameInfo.state == "play" || gameInfo.state == "play1st") && players[group.id].cards[group.cardIndex].state == "hand") {
+                            socket.emit("pickCard", {index: group.cardIndex, id: group.id});
+                        } else if(gameInfo.state == "remove") {
+                            socket.emit("pickCard", {index: group.cardIndex, id: group.id});
+                        } else if(gameInfo.state == "pick" && (players[group.id].cards[group.cardIndex].state == "played" || players[group.id].cards[group.cardIndex].state == "revealed")) {
+                            if(getPlayedCards(group.id) == 0) return;
+                            // Get card with highest order
+                            var highestOrder = -1;
+                            var highestIndex = -1;
+                            for(var i = 0; i < players[group.id].cards.length; i++) {
+                                if(players[group.id].cards[i].state != "played") continue;
+                                if(players[group.id].cards[i].order > highestOrder) {
+                                    highestOrder = players[group.id].cards[i].order;
+                                    highestIndex = i;
+                                }
+                            }
+                            socket.emit("pickCard", {index: highestIndex, id: group.id});
+                        }
+                    } else if(gameInfo.currentTurn == myPlayerID) { // Picking other cards. You can only do this if you are strictly currentTurn
+                        if(gameInfo.state == "pick" && players.hasOwnProperty(myPlayerID) && getPlayedCards(myPlayerID) == 0 && (players[group.id].cards[group.cardIndex].state == "played" || players[group.id].cards[group.cardIndex].state == "revealed")) {
+                            if(getPlayedCards(group.id) == 0) return;
+                            // Get card with highest order
+                            var highestOrder = -1;
+                            var highestIndex = -1;
+                            for(var i = 0; i < players[group.id].cards.length; i++) {
+                                if(players[group.id].cards[i].state != "played") continue;
+                                if(players[group.id].cards[i].order > highestOrder) {
+                                    highestOrder = players[group.id].cards[i].order;
+                                    highestIndex = i;
+                                }
+                            }
+                            socket.emit("pickCard", {index: highestIndex, id: group.id});
+                            socket.emit("focusPlayer", {id: group.id});
+                        }
+                    }
+                }
+            });
+            group.add(cardBackground);
+            var inside = new Konva.Image({
+                image: textures[insideTex],
+                x: 0,
+                y: 0,
+                rotation: 0,
+                offset: {x: 64, y: 64},
+                scaleX: 0.325,
+                scaleY: 0.325,
+                shadowOffsetX : 6,
+                shadowOffsetY : 6,
+                listening: false,
+
+                visible: false,
+            });
+            inside.cache();
+            group.add(inside);
+            if(playerID == myPlayerID) {
+                bottomPlayerCardLayer.add(group);
+            } else {
+                cardLayer.add(group);
+            }
+            return group;
+        }
+        // Meant to be used in reaction to Server events in updateCards()
+        function setCardShowing(card, showing) {
+            if(card.hasOwnProperty("showing") && card.showing != showing) {
+                let tweenClose = new Konva.Tween({
+                    node: card.getChildren()[0],
+                    duration: 0.25,
+                    scaleX: 0,
+                    scaleY: 0.5,
+                    easing: Konva.Easings.EaseOut,
+                    onFinish: function () {
+                        let tweenOpen = new Konva.Tween({
+                            node: card.getChildren()[0],
+                            duration: 0.25,
+                            scaleX: 1,
+                            scaleY: 1,
+                            easing: Konva.Easings.EaseOut,
+                        });
+                        tweenOpen.play();
+                    },
+                });
+                tweenClose.play();
+
+                let tweenClose2 = new Konva.Tween({
+                    node: card.getChildren()[1],
+                    duration: 0.25,
+                    scaleX: 0   * 0.325,
+                    scaleY: 0.5 * 0.325,
+                    easing: Konva.Easings.EaseOut,
+                    onFinish: function () {
+                        card.getChildren()[1].visible(showing);
+                        let tweenOpen2 = new Konva.Tween({
+                            node: card.getChildren()[1],
+                            duration: 0.25,
+                            scaleX: 1 * 0.325,
+                            scaleY: 1 * 0.325,
+                            easing: Konva.Easings.EaseOut,
+                        });
+                        tweenOpen2.play();
+                    },
+                });
+                tweenClose2.play();
+
+                card.showing = showing;
+            }
+        }
+        function addPlayer(id) {
+            var player = players[id] = {
+                name: "Player",
+                color: "#FF0000",
+                cards: [], // from Socket.io packets
+                cardGraphics: [],
+                points: 0,
+                position: {x: -250, y: -700},
+                graphicGroup: null,
+                backgroundGraphic: null,
+                textGraphic: null,
+                pointsGraphic: null,
+            }
+            return player;
+        }
+        function setupPlayer(id) {
+            var player = players[id];
+            // Group setup
+            player.graphicGroup = new Konva.Group({x: player.position.x, y: player.position.y});
+            playersGroup.add(player.graphicGroup);
+            // Background setup
+            var pBackground = player.backgroundGraphic = new Konva.Rect({
+                x: 0,
+                y: 0,
+                width: modeInfo.pBGRWidth,
+                height: modeInfo.pBGRHeight,
+                rotation: 0,
+                fill: "#888888",
+                stroke: player.color,
+                strokeWidth: 0,
+                cornerRadius: [5, 5, 5, 5],
+                listening: false,
+            });
+            player.graphicGroup.add(pBackground);
+            // Text setup
+            player.textGraphic = new Konva.Text({
+                x: 0,
+                y: 16,
+                width: modeInfo.pBGRWidth,
+                height: modeInfo.pBGRHeight,
+                align: "center",
+                verticalAlign: "top",
+                text: player.name,
+                fontSize: 64,
+                fontFamily: 'Arial',
+                fill: player.color,
+                listening: false,
+                shadowOffsetX: 2,
+                shadowOffsetY: 2,
+            });
+            player.graphicGroup.add(player.textGraphic);
+            // Points setup
+            player.pointsGraphic = new Konva.Text({
+                x: 0,
+                y: 16+64,
+                width: modeInfo.pBGRWidth,
+                height: modeInfo.pBGRHeight,
+                align: "center",
+                verticalAlign: "top",
+                text: "Points: 0 / 2",
+                fontSize: 32,
+                fontFamily: 'Arial',
+                fill: player.color,
+                shadowOffsetX: 2,
+                shadowOffsetY: 2,
+                listening: false,
+            });
+            player.graphicGroup.add(player.pointsGraphic);
+            // Card setup
+            for(var i = 0; i < player.cards.length; i++) {
+                player.cardGraphics[i] = addCard(player.cards[i].type, id, i);
+                player.cardGraphics[i].position({x:0, y:-700});
+            }
+        }
+        // Update all player colors, text and player root group position
+        // NOTE: Also updates cards
+        function updatePlayer(id) {
+            var player = players[id];
+            // graphicGroup position
+            let gtween = new Konva.Tween({
+                node: player.graphicGroup,
+                duration: 0.25, 
+                x: player.position.x,
+                y: player.position.y,
+                easing: Konva.Easings.EaseOut,
+            });
+            gtween.play();
+            // background
+            let btween = new Konva.Tween({
+                node: player.backgroundGraphic,
+                duration: 0.25, 
+                stroke: player.color,
+                easing: Konva.Easings.EaseOut,
+            });
+            btween.play();
+            var stuffToResize = [player.backgroundGraphic, /*player.textGraphic,*/ player.pointsGraphic]
+            var targetWidth = modeInfo.pBGRWidth;
+            var targetHeight = modeInfo.pBGRHeight;
+            if(id == myPlayerID) {
+                targetWidth = modeInfo.myBGRWidth;
+                targetHeight = modeInfo.myBGRHeight;        
+            }
+            for(var i = 0; i < stuffToResize.length; i++) {
+                let resizeTween = new Konva.Tween({
+                    node: stuffToResize[i],
+                    duration: 0.25, 
+                    width: targetWidth,
+                    height: targetHeight,
+                    easing: Konva.Easings.EaseOut,
+                });
+                resizeTween.play();
+            }
+            // TextGraphic name and color
+            player.textGraphic.text(player.name);
+            let textTween = new Konva.Tween({
+                node: player.textGraphic,
+                duration: 0.25, 
+                fill: player.color,
+                easing: Konva.Easings.EaseOut,
+            });
+            textTween.play();
+            // But the Text should stay the same size as others so you can see what it looks like for them
+            // Also set fontsize and pos from left side
+            var nameX = 0;
+            if(id == myPlayerID) {
+                nameX = (modeInfo.myBGRWidth-modeInfo.pBGRWidth)/2;
+            }
+            let tempText = new Konva.Text({
+                x: 0,
+                y: 0,
+                //width: modeInfo.pBGRWidth,
+                //height: modeInfo.pBGRHeight,
+                //align: "center",
+                //verticalAlign: "top",
+                text: player.name,
+                fontSize: 64,
+                fontFamily: 'Arial',
+                fill: player.color,
+                listening: false,
+                shadowOffsetX: 2,
+                shadowOffsetY: 2,
+            });
+            let textNameTween = new Konva.Tween({
+                node: player.textGraphic,
+                duration: 0.25, 
+                x: nameX,
+                width: modeInfo.pBGRWidth,
+                height: modeInfo.pBGRHeight,
+                fontSize: Math.min(modeInfo.pBGRWidth / tempText.width(), 1) * 64,
+                easing: Konva.Easings.EaseOut,
+            });
+            tempText.destroy();
+            textNameTween.play();
+            // pointsGraphic text and color
+            if(modeInfo.pointsToWin != 999) {
+                player.pointsGraphic.text("Points: " + player.points + " / " + modeInfo.pointsToWin);
+            } else {
+                player.pointsGraphic.text("Points: " + player.points);
+            }
+            let pointTween = new Konva.Tween({
+                node: player.pointsGraphic,
+                duration: 0.25, 
+                fill: player.color,
+                easing: Konva.Easings.EaseOut,
+            });
+            pointTween.play();
+            // Card colors
+            for(var i = 0; i < Object.keys(player.cardGraphics).length; i++) {
+                let tween = new Konva.Tween({
+                    node: player.cardGraphics[i].getChildren()[0],
+                    duration: 0.25,
+                    fill: player.color,
+                    easing: Konva.Easings.EaseOut,
+                });
+                tween.play();
+            }
+            updateCards(id);
+        }
+        // NOTE: Takes ID not player
+        function updateCards(id) {
+            var player = players[id];
+
+            // Konva's zIndexes arent very good so all I can safely do is set it to 0
+            // so instead im getting all the indexes, looking at what should come after what and then
+            // setting them to 0 in order at the bottom
+            var zIndexOrder = {};
+            var orders = [];
+            for(var i = 0; i < player.cards.length; i++) {
+                if(!zIndexOrder.hasOwnProperty(player.cards[i].order)) zIndexOrder[player.cards[i].order] = [];
+                zIndexOrder[player.cards[i].order].push(i);
+                if(orders.indexOf(player.cards[i].order) == -1) orders.push(player.cards[i].order);
+            }
+            orders.sort(function(a, b) { return a - b; });
+            orders.reverse();
+            for(var i = 0; i < orders.length; i++) {
+                for(var y = 0; y < zIndexOrder[orders[i]].length; y++) {
+                    player.cardGraphics[(zIndexOrder[orders[i]][y])].zIndex(0);
+                }
+            }
+
+            for(let i = 0; i < player.cardGraphics.length; i++) {
+                let tween;
+                switch(player.cards[i].state) {
+                    case "shuffling": 
+                        tween = new Konva.Tween({
+                            node: player.cardGraphics[i],
+                            duration: 0.75, 
+                            x: player.position.x + 64,
+                            y: player.position.y + 64,
+                            scaleX: 1,
+                            scaleY: 1,
+                            easing: Konva.Easings.EaseOut,
+                        });
+                        let rottween = new Konva.Tween({
+                            node: player.cardGraphics[i].getChildren()[0],
+                            duration: 0.75, 
+                            rotation: 45,
+                            easing: Konva.Easings.EaseOut,
+                        });
+                        rottween.play();
+                        setCardShowing(player.cardGraphics[i], false);
+                        break;
+                    case "hand": 
+                        if(id == myPlayerID) {
+                            tween = new Konva.Tween({
+                                node: player.cardGraphics[i],
+                                duration: 1, 
+                                x: player.position.x + ((modeInfo.myBGRWidth)/(modeInfo.cardCount+1)) + ((modeInfo.myBGRWidth)/(modeInfo.cardCount+1))*player.cards[i].order,
+                                y: player.position.y + ((modeInfo.myBGRHeight-96)/2)+96,
+                                scaleX: modeInfo.myCardHandScale,
+                                scaleY: modeInfo.myCardHandScale,
+                                easing: Konva.Easings.EaseOut,
+                            });
+                            setCardShowing(player.cardGraphics[i], true );
+                        } else {
+                            tween = new Konva.Tween({
+                                node: player.cardGraphics[i],
+                                duration: 1, 
+                                x: player.position.x + ((modeInfo.pBGRWidth)/(modeInfo.cardCount+1)) + ((modeInfo.pBGRWidth)/(modeInfo.cardCount+1))*player.cards[i].order,
+                                y: player.position.y + 96 + 64,
+                                scaleX: modeInfo.cardHandScale,
+                                scaleY: modeInfo.cardHandScale,
+                                easing: Konva.Easings.EaseOut,
+                            });
+                            setCardShowing(player.cardGraphics[i], false );
+                        }
+                        break;
+                    case "played": 
+                        if(id == myPlayerID) { 
+                            tween = new Konva.Tween({
+                                node: player.cardGraphics[i],
+                                duration: 1, 
+                                x: player.position.x + 75 + 75*player.cards[i].order,
+                                y: player.position.y - 64,
+                                scaleX: 1.25,
+                                scaleY: 1.25,
+                                easing: Konva.Easings.EaseOut,
+                            });
+                        } else {
+                            tween = new Konva.Tween({
+                                node: player.cardGraphics[i],
+                                duration: 1, 
+                                x: player.position.x + 50 + 50*player.cards[i].order,
+                                y: player.position.y + modeInfo.pBGRHeight + 64,
+                                scaleX: 1.25,
+                                scaleY: 1.25,
+                                easing: Konva.Easings.EaseOut,
+                            });
+                        }
+                        setCardShowing(player.cardGraphics[i], false);
+                        break;
+                    case "revealed": 
+                        if(id == myPlayerID) { 
+                            tween = new Konva.Tween({
+                                node: player.cardGraphics[i],
+                                duration: 1, 
+                                x: player.position.x + 75 + 75*player.cards[i].order,
+                                y: player.position.y - 64,
+                                scaleX: 1.25,
+                                scaleY: 1.25,
+                                easing: Konva.Easings.EaseOut,
+                            });
+                        } else {
+                            tween = new Konva.Tween({
+                                node: player.cardGraphics[i],
+                                duration: 1, 
+                                x: player.position.x + 50 + 50*player.cards[i].order,
+                                y: player.position.y + modeInfo.pBGRHeight + 64,
+                                scaleX: 1.25,
+                                scaleY: 1.25,
+                                easing: Konva.Easings.EaseOut,
+                            });
+                        }
+                        if(player.cards[i].type == "skull") {
+                            setTimeout(() => {
+                                if(player.cards[i].state == "revealed") {
+                                    let tween2 = new Konva.Tween({
+                                        node: player.cardGraphics[i].getChildren()[0],
+                                        duration: 0.5,
+                                        rotation: 360-45,
+                                        easing: Konva.Easings.EaseOut,
+                                    });
+                                    tween2.play();
+                                }
+                            }, 500);
+                        }
+                        setCardShowing(player.cardGraphics[i], true);
+                        break;
+                }
+                tween.play();
+            }
+            updateCardStrokes(id);
+        }
+        function updateCardStrokes(id) {
+            // Card effects
+            if(id == myPlayerID) {
+                var player = players[id];
+                for(var i = 0; i < player.cards.length; i++) {
+                    let card = player.cards[i];
+                    let graphic = player.cardGraphics[i].getChildren()[0];
+                    let strokeTween = null;
+                    if(gameInfo.state == "remove" && gameInfo.currentTurn == myPlayerID) {
+                        setTimeout(() => {
+                            if(gameInfo.state == "remove" && gameInfo.currentTurn == myPlayerID) {
+                                var tween = new Konva.Tween({
+                                    node: graphic,
+                                    duration: 0.25, 
+                                    stroke: "hsl(0,0%,95%)",
+                                    easing: Konva.Easings.EaseOut,
+                                });
+                                tween.play();
+                            }
+                        }, 1000);
+                    } else if(card.state == "hand" && gameInfo.playing && ((gameInfo.state == "play" && gameInfo.currentTurn == myPlayerID) || (gameInfo.state == "play1st" && gameInfo.canPlayCard.indexOf(myPlayerID) != -1))) {
+                        strokeTween = new Konva.Tween({
+                            node: graphic,
+                            duration: 0.25, 
+                            stroke: "hsl(0,0%,95%)",
+                            easing: Konva.Easings.EaseOut,
+                        });
+                    } else if(card.state == "played" && gameInfo.playing && gameInfo.state == "pick" && (gameInfo.currentTurn == myPlayerID)) {
+                        // Spy red outline
+                        if(gameInfo.spies.includes(myPlayerID) && card.type == "skull") {
+                            strokeTween = new Konva.Tween({
+                                node: graphic,
+                                duration: 0.25, 
+                                stroke: "hsl(5,80%,65%)",
+                                easing: Konva.Easings.EaseOut,
+                            });
+                        } else {
+                            strokeTween = new Konva.Tween({
+                                node: graphic,
+                                duration: 0.25, 
+                                stroke: "hsl(0,0%,95%)",
+                                easing: Konva.Easings.EaseOut,
+                            });
+                        }
+                    } else {
+                        // Spy red outline
+                        if(gameInfo.spies.includes(myPlayerID) && card.type == "skull") {
+                            strokeTween = new Konva.Tween({
+                                node: graphic,
+                                duration: 0.25, 
+                                stroke: "hsl(5,80%,65%)",
+                                easing: Konva.Easings.EaseOut,
+                            });
+                        } else {
+                            strokeTween = new Konva.Tween({
+                                node: graphic,
+                                duration: 0.25, 
+                                stroke: "hsl(0,0%,0%)",
+                                easing: Konva.Easings.EaseOut,
+                            });
+                        }
+                    }
+                    if(strokeTween != null) strokeTween.play();
+                }
+            } else {
+                var player = players[id];
+                for(var i = 0; i < player.cards.length; i++) {
+                    let card = player.cards[i];
+                    let graphic = player.cardGraphics[i].getChildren()[0];
+                    let strokeTween;
+                    if(gameInfo.state == "remove" && gameInfo.currentTurn == myPlayerID) {
+                        setTimeout(() => {
+                            if(gameInfo.state == "remove" && gameInfo.currentTurn == myPlayerID) {
+                                // Spy red outline
+                                if(gameInfo.spies.includes(myPlayerID) && card.type == "skull") {
+                                    var tween = new Konva.Tween({
+                                        node: graphic,
+                                        duration: 0.25, 
+                                        stroke: "hsl(5,80%,65%)",
+                                        easing: Konva.Easings.EaseOut,
+                                    });
+                                    tween.play();
+                                } else {
+                                    var tween = new Konva.Tween({
+                                        node: graphic,
+                                        duration: 0.25, 
+                                        stroke: "hsl(0,0%,0%)",
+                                        easing: Konva.Easings.EaseOut,
+                                    });
+                                    tween.play();
+                                }
+                            }
+                        }, 1000);
+                    } else if(card.state == "played" && getPlayedCards(myPlayerID) == 0 && gameInfo.playing && gameInfo.state == "pick" && (gameInfo.currentTurn == myPlayerID)) {
+                        // Spy red outline
+                        if(gameInfo.spies.includes(myPlayerID) && card.type == "skull") {
+                            strokeTween = new Konva.Tween({
+                                node: graphic,
+                                duration: 0.25, 
+                                stroke: "hsl(5,80%,65%)",
+                                easing: Konva.Easings.EaseOut,
+                            });
+                        } else {
+                            strokeTween = new Konva.Tween({
+                                node: graphic,
+                                duration: 0.25, 
+                                stroke: "hsl(0,0%,95%)",
+                                easing: Konva.Easings.EaseOut,
+                            });
+                        }
+                    } else {
+                        // Spy red outline
+                        if(gameInfo.spies.includes(myPlayerID) && card.type == "skull") {
+                            strokeTween = new Konva.Tween({
+                                node: graphic,
+                                duration: 0.25, 
+                                stroke: "hsl(5,80%,65%)",
+                                easing: Konva.Easings.EaseOut,
+                            });
+                        } else {
+                            strokeTween = new Konva.Tween({
+                                node: graphic,
+                                duration: 0.25, 
+                                stroke: "hsl(0,0%,0%)",
+                                easing: Konva.Easings.EaseOut,
+                            });
+                        }
+                    }
+                    if(strokeTween != null) strokeTween.play();
+                }
+            }
+        }
+        // NOTE: Takes player as argument
+        function removeCard(player, index) {
+            // Remember: splice both arrays and update cards when done
+            if(player.cardGraphics.length >= index) {
+                let card = player.cardGraphics[index];
+                card.id = -1;
+                card.cardIndex = -1;
+                setCardShowing(card, false);
+                tween = new Konva.Tween({
+                    node: card,
+                    duration: 1, 
+                    x: 0,
+                    y: -700,
+                    easing: Konva.Easings.EaseOut,
+                    onFinish: function () {
+                        card.destroy();
+                    },
+                });
+                tween.play();
+                player.cardGraphics.splice(index, 1);
+            }
+            player.cards.splice(index, 1);
+            // Update indexes
+            for(var i = 0; i < player.cardGraphics.length; i++) {
+                player.cardGraphics[i].cardIndex = i;
+            }
+        }
+        // Updates all players and sets positions with myPlayerID
+        function updateAllPlayers() {
+            var onTop = 0;
+            var currentlyOnTop = 0;
+            if(!players.hasOwnProperty(myPlayerID)) {
+                onTop = Object.keys(players).length;
+                var IDArray = Object.keys(players);
+                for(var i = 0; i < IDArray.length; i++) {
+                    IDArray[i] = parseInt(IDArray[i], 10);
+                }
+                IDArray.sort(function(a, b) {
+                    return a - b;
+                });
+
+                for(var i = 0; i < IDArray.length; i++) {
+                    var id = IDArray[i];
+                    var player = players[id];
+                    player.position = {x: ( (-modeInfo.pBGRWidth/2 - 10) * onTop) + ( (modeInfo.pBGRWidth + 20) * currentlyOnTop), y: -1080/2 + 10};
+                    currentlyOnTop++;
+                }
+            } else {
+                onTop = Object.keys(players).length - 1;
+                var IDArray = Object.keys(players);
+                for(var i = 0; i < IDArray.length; i++) {
+                    IDArray[i] = parseInt(IDArray[i], 10);
+                }
+                IDArray.sort(function(a, b) {
+                    return a - b;
+                });
+
+                var i = IDArray.indexOf(myPlayerID);
+                var calcedFirst = false;
+                while(!calcedFirst || i != IDArray.indexOf(myPlayerID)) {
+                    var id = IDArray[i];
+                    var player = players[id];
+                    if(id == myPlayerID) {
+                        player.position = {x: -modeInfo.myBGRWidth/2, y: 0};
+                    } else {
+                        player.position = {x: ( (-modeInfo.pBGRWidth/2 - 10) * onTop) + ( (modeInfo.pBGRWidth + 20) * currentlyOnTop), y: -1080/2 + 10};
+                        currentlyOnTop++;
+                    }
+                    calcedFirst = true;
+
+                    i++;
+                    if(i >= IDArray.length) {
+                        i = 0;
+                    }
+                }
+            }
+
+            // Show scrolling buttons if too many players to fit on screen
+            scrollLeftButton.visible(onTop > 4);
+            scrollRightButton.visible(onTop > 4);
+
+            for(var id in players) {
+                updatePlayer(id);
+            }
+        }
+        // NOTE: Takes ID not player
+        function removePlayer(id) {
+            var player = players[id];
+            player.backgroundGraphic.destroy();
+            player.textGraphic.destroy();
+            player.pointsGraphic.destroy();
+            for(var i = 0; i < player.cardGraphics.length; i++) {
+                player.cardGraphics[i].destroy();
+            }
+            player.graphicGroup.destroy();
+
+            if(myPlayerID == id) myPlayerID = -1;
+            delete players[id];
+
+            // recenter currentPlayersGroupX
+            currentPlayersGroupX = 0;
+            updatePlayersGroupX();
+
+            updateAllPlayers();
+        }
+        function getPlayedCards(id) {
+            if(!players.hasOwnProperty(id)) return 0;
+            var amount = 0;
+            var player = players[id];
+            for(var i = 0; i < player.cards.length; i++) {
+                if(player.cards[i].state == "played") amount++;
+            }
+            return amount;
+        }
+        function getAllPlayedCards() {
+            var amount = 0;
+            for(var id in players) {
+                var player = players[id];
+                for(var i = 0; i < player.cards.length; i++) {
+                    if(player.cards[i].state == "played") amount++;
+                }
+            }
+            return amount;
+        }
+        var titleText;
+        var titleID = 0;
+        function showTitle(text = "", time = 1000) {
+            titleID++;
+            let currentTitleID = titleID;
+            titleText.text(text);
+            titleText.offsetX(titleText.width()/2);
+            titleText.offsetY(titleText.height()/2);
+            titleText.scaleX(0);
+            titleText.scaleY(0);
+            let tweenUp = new Konva.Tween({
+                node: titleText,
+                duration: 0.25,
+                scaleX: 1,
+                scaleY: 1,
+                easing: Konva.Easings.EaseOut,
+                onFinish: function () {
+                    setTimeout(() => {
+                        if(currentTitleID == titleID) {
+                            let tweenDown = new Konva.Tween({
+                                node: titleText,
+                                duration: 0.15,
+                                scaleX: 0,
+                                scaleY: 0,
+                                easing: Konva.Easings.EaseOut,
+                            });
+                            tweenDown.play();
+                        }
+                    }, time);
+                },
+            });
+            tweenUp.play();
+        }
+
+        function applyButtonListeners(background, text) {
+            background.on("mouseover mouseup touchend mouseleave", () => {
+                background.fill("hsl(0,0%,90%)");
+                background.shadowOffsetY(3);
+                background.offsetY(0);
+                text.offsetY(0);
+            });
+            background.on("mousedown touchstart", () => {
+                background.fill("hsl(0,0%,80%)");
+                background.shadowOffsetY(0);
+                background.offsetY(-3);
+                text.offsetY(-3);
+            });
+            background.on("mouseleave touchend", () => {
+                background.fill("hsl(0,0%,100%)");
+            });
+        }
+        function createButton(shape = "rect", inside = "Button", scale = 1, textFontSize = 32) {
+            var newButton = new Konva.Group({x: 0, y: 0});
+            var newButtonBackground;
+            if(shape == "rect") {
+                newButtonBackground = new Konva.Rect({
+                    x: 0,
+                    y: 0,
+                    width: 100,
+                    height: 100,
+                    rotation: 0,
+                    fill: "white",
+                    stroke: "black",
+                    strokeWidth: 3,
+                    cornerRadius: [5, 5, 5, 5],
+                    shadowOffsetY: 3,
+                    listening: true,
+                });
+            } else {
+                newButtonBackground = new Konva.Circle({
+                    x: 50,
+                    y: 50,
+                    radius: 50,
+                    fill: 'white',
+                    stroke: 'black',
+                    strokeWidth: 3,
+                    shadowOffsetY: 3,
+                    listening: true,
+                });
+            }
+            var newButtonInside;
+            if(typeof inside === 'string' || inside instanceof String) {
+                newButtonInside = new Konva.Text({
+                    x: 0,
+                    y: 0,
+                    text: inside,
+                    width: newButtonBackground.width(),
+                    height: newButtonBackground.height(),
+                    align: "center",
+                    verticalAlign: "middle",
+                    fontSize: textFontSize,
+                    fontFamily: 'Arial',
+                    fill: "black",
+                    listening: false,
+                });
+                newButtonInside.y(5);
+            } else {
+                newButtonInside = inside;
+            }
+            applyButtonListeners(newButtonBackground, newButtonInside);
+            newButton.add(newButtonBackground);
+            newButton.add(newButtonInside);
+            newButton.scale({x: scale, y: scale});
+            newButton.offset({x: 50, y: 50});
+            return newButton;
+        }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+        
+        //KONVA SETUP
+        Konva.pixelRatio = 1;
+        var stage = new Konva.Stage({
+            container: 'konva',
+            width: window.innerWidth,
+            height: window.innerHeight,
+        });
+
+        var qualitySetting = 1;
+        // best is 1, lower numbers are lower quality
+        function resizeStage() {
+            qualitySetting = Math.max(Math.min( Math.round(qualitySetting*100), 100), 10) / 100;
+            if( (window.innerWidth / 16) < (window.innerHeight / 9) ) {
+                // More height than width, scale according to width
+                var size = window.innerWidth / 1920;
+                var pixelRatio = qualitySetting/size;
+
+                background.getCanvas().setPixelRatio(pixelRatio);
+                background.draw();
+                layer.getCanvas().setPixelRatio(pixelRatio);
+                layer.draw();
+                cardLayer.getCanvas().setPixelRatio(pixelRatio);
+                cardLayer.draw();
+                bottomPlayerCardLayer.getCanvas().setPixelRatio(pixelRatio);
+                bottomPlayerCardLayer.draw();
+                front.getCanvas().setPixelRatio(pixelRatio);
+                front.draw();
+
+                stage.scale({x: size, y: size});
+                stage.width(window.innerWidth);
+                stage.height(window.innerWidth / 1.77777777);
+            } else {
+                // More width than height, scale according to height
+                var size = window.innerHeight / 1080;
+                var pixelRatio = qualitySetting/size;
+
+                background.getCanvas().setPixelRatio(pixelRatio);
+                background.draw();
+                layer.getCanvas().setPixelRatio(pixelRatio);
+                layer.draw();
+                cardLayer.getCanvas().setPixelRatio(pixelRatio);
+                cardLayer.draw();
+                bottomPlayerCardLayer.getCanvas().setPixelRatio(pixelRatio);
+                bottomPlayerCardLayer.draw();
+                front.getCanvas().setPixelRatio(pixelRatio);
+                front.draw();
+
+                stage.scale({x: size, y: size});
+                stage.width(window.innerHeight * 1.77777777);
+                stage.height(window.innerHeight);
+            }
+        }
+        window.onresize = resizeStage;
+
+        var background = new Konva.Layer();
+        stage.add(background);
+        var layer = new Konva.Layer();
+        stage.add(layer);
+        var cardLayer = new Konva.Layer();
+        stage.add(cardLayer);
+        var bottomPlayerCardLayer = new Konva.Layer();
+        stage.add(bottomPlayerCardLayer);
+        var front = new Konva.Layer();
+        stage.add(front);
+        layer.position({x: 1920/2, y: 1080 / 2});
+        front.position({x: 1920/2, y: 1080 / 2});
+        cardLayer.position({x: 1920/2, y: 1080 / 2});
+        bottomPlayerCardLayer.position({x: 1920/2, y: 1080 / 2});
+
+        resizeStage();
+
+        var playersGroup = new Konva.Group();
+        layer.add(playersGroup);
+
+        var currentBidText;
+        var scrollLeftButton;
+        var scrollRightButton;
+        var currentPlayersGroupX = 0;
+        function updatePlayersGroupX() {
+            if(Object.keys(players).length > 5) {
+                var range = (Object.keys(players).length-4) / 2;
+                range *= 450;
+                currentPlayersGroupX = Math.min(Math.max(currentPlayersGroupX, -range), range);
+            } else {
+                currentPlayersGroupX = 0;
+            }
+            let tween = new Konva.Tween({
+                node: playersGroup,
+                duration: 1, 
+                x: currentPlayersGroupX,
+                easing: Konva.Easings.EaseOut,
+            });
+            tween.play();
+            let tween2 = new Konva.Tween({
+                node: cardLayer,
+                duration: 1, 
+                x: 1920/2 + currentPlayersGroupX,
+                easing: Konva.Easings.EaseOut,
+            });
+            tween2.play();
+            if(players.hasOwnProperty(gameInfo.currentBidder)) {
+                var bidX = players[gameInfo.currentBidder].position.x;
+                if(gameInfo.currentBidder != myPlayerID)
+                    bidX += currentPlayersGroupX;
+                let tween3 = new Konva.Tween({
+                    node: currentBidText,
+                    duration: 1,
+                    x: bidX,
+                    y: players[gameInfo.currentBidder].position.y,
+                    easing: Konva.Easings.EaseOut,
+                });
+                tween3.play();
+            }
+        }
+
+        function setup() {
+            //GAME SETUP
+
+            var border = new Konva.Rect({
+                x: 0,
+                y: 0,
+                width: 1920,
+                height: 1080,
+                fill: '#aaaaaa',
+                stroke: 'black',
+                strokeWidth: 8,
+            });
+            background.add(border);
+
+            titleText = new Konva.Text({
+                x: 0,
+                y: -60,
+                align: "center",
+                verticalAlign: "middle",
+                text: "",
+                fontSize: 64,
+                fontFamily: 'Arial',
+                fill: 'white',
+                shadowOffsetX: 3,
+                shadowOffsetY: 3,
+                shadowBlur: 3,
+                scaleX: 0,
+                scaleY: 0,
+                listening:false,
+            });
+            front.add(titleText);
+
+            // Scrolling players left and right
+            var scrollLeftButtonInside = new Konva.Image({
+                image: textures["arrowLeft"],
+                x: 50-32,
+                y: 50-32,
+                rotation: 0,
+                offset: {x: 0, y: 0},
+                scaleX: 0.5,
+                scaleY: 0.5,
+                shadowOffsetX : 0,
+                shadowOffsetY : 0,
+                listening: false,
+            });
+            scrollLeftButtonInside.cache();
+            scrollLeftButtonInside.filters([Konva.Filters.Brighten]);
+            scrollLeftButtonInside.brightness(-1);
+            scrollLeftButton = createButton("circle", scrollLeftButtonInside, 1.5);
+            scrollLeftButton.position({x: -1920/2 + 100, y: -1080/2 + 125});
+            scrollLeftButton.add(scrollLeftButtonInside);
+            scrollLeftButton.getChildren()[0].on("click tap", () => {
+                currentPlayersGroupX += 450;
+                updatePlayersGroupX();
+            });
+            front.add(scrollLeftButton);
+            scrollLeftButton.visible(false);
+
+            var scrollRightButtonInside = new Konva.Image({
+                image: textures["arrowRight"],
+                x: 50-32,
+                y: 50-32,
+                rotation: 0,
+                offset: {x: 0, y: 0},
+                scaleX: 0.5,
+                scaleY: 0.5,
+                shadowOffsetX : 0,
+                shadowOffsetY : 0,
+                listening: false,
+            });
+            scrollRightButtonInside.cache();
+            scrollRightButtonInside.filters([Konva.Filters.Brighten]);
+            scrollRightButtonInside.brightness(-1);
+            scrollRightButton = createButton("circle", scrollRightButtonInside, 1.5);
+            scrollRightButton.position({x: 1920/2 - 100, y: -1080/2 + 125});
+            scrollRightButton.add(scrollRightButtonInside);
+            scrollRightButton.getChildren()[0].on("click tap", () => {
+                currentPlayersGroupX -= 450;
+                updatePlayersGroupX();
+            });
+            front.add(scrollRightButton);
+            scrollLeftButton.visible(true);
+
+            // Left Menu - player settings
+            var leftMenuOpen = false;
+            var leftMenuOpenable = false;
+            var leftMenuButtonInside = new Konva.Image({
+                image: textures["gear"],
+                x: 50-32,
+                y: 50-32,
+                rotation: 0,
+                offset: {x: 0, y: 0},
+                scaleX: 0.5,
+                scaleY: 0.5,
+                shadowOffsetX : 0,
+                shadowOffsetY : 0,
+                listening: false,
+            });
+            leftMenuButtonInside.cache();
+            leftMenuButtonInside.filters([Konva.Filters.Brighten]);
+            leftMenuButtonInside.brightness(-1);
+            var leftMenuButton = createButton("circle", leftMenuButtonInside, 1.25);
+            leftMenuButton.position({x: -1225, y: (1080/2)-80-10});
+            leftMenuButton.add(leftMenuButtonInside);
+            leftMenuButton.getChildren()[0].on("dblclick dbltap", () => {
+                if(leftMenuOpenable) {
+                    leftMenuOpen = !leftMenuOpen;
+                    updateMenus();
+                }
+            });
+            layer.add(leftMenuButton);
+
+            var colorButton = createButton("rect", "Change\nColor", 1.25);
+            colorButton.position({x: -1225, y: (1080/2)-80-10});
+            colorButton.getChildren()[0].width(150);
+            colorButton.getChildren()[1].width(150);
+            var currentHSL = 0;
+            colorButton.getChildren()[0].on("click tap", () => {
+                currentHSL += 30;
+                currentHSL = currentHSL % 360;
+                socket.emit("updatePlayer", {color: "hsl(" + currentHSL + ",100%,50%)"});
+            });
+            layer.add(colorButton);
+
+            var qualityPlusButton = createButton("rect", "Quality +", 1.25);
+            // lord forgive me for this horrible code
+            qualityPlusButton.position({x: -1225, y: (1080/2)-80-125-30});
+            qualityPlusButton.getChildren()[0].width(150);
+            qualityPlusButton.getChildren()[1].width(150);
+            qualityPlusButton.getChildren()[0].on("click tap", () => {
+                qualitySetting += 0.1;
+                resizeStage();
+                showTitle("Quality set to " + (qualitySetting * 100) + "%", 2000);
+            });
+            layer.add(qualityPlusButton);
+
+            var qualityMinusButton = createButton("rect", "Quality -", 1.25);
+            qualityMinusButton.position({x: -1225, y: (1080/2)-80-250-50});
+            qualityMinusButton.getChildren()[0].width(150);
+            qualityMinusButton.getChildren()[1].width(150);
+            qualityMinusButton.getChildren()[0].on("click tap", () => {
+                qualitySetting -= 0.1;
+                resizeStage();
+                showTitle("Quality set to " + (qualitySetting * 100) + "%", 2000);
+            });
+            layer.add(qualityMinusButton);
+
+            // Right menu - game settings
+            var rightMenuOpen = false;
+            var rightMenuOpenable = false;
+            var rightMenuButtonInside = new Konva.Image({
+                image: textures["controller"],
+                x: 50-32,
+                y: 50-32,
+                rotation: 0,
+                offset: {x: 0, y: 0},
+                scaleX: 0.5,
+                scaleY: 0.5,
+                shadowOffsetX : 0,
+                shadowOffsetY : 0,
+                listening: false,
+            });
+            rightMenuButtonInside.cache();
+            rightMenuButtonInside.filters([Konva.Filters.Brighten]);
+            rightMenuButtonInside.brightness(-1);
+            var rightMenuButton = createButton("circle", rightMenuButtonInside, 1.25);
+            rightMenuButton.position({x: 1225, y: (1080/2)-80-10});
+            rightMenuButton.add(rightMenuButtonInside);
+            rightMenuButton.getChildren()[0].on("dblclick dbltap", () => {
+                if(rightMenuOpenable) {
+                    rightMenuOpen = !rightMenuOpen;
+                    updateMenus();
+                }
+            });
+            layer.add(rightMenuButton);
+
+            var startGameButton = createButton("rect", "Start\nGame", 1.25);
+            startGameButton.position({x: 1225, y: (1080/2)-80-10});
+            startGameButton.getChildren()[0].width(150);
+            startGameButton.getChildren()[1].width(150);
+            startGameButton.getChildren()[0].on("dblclick dbltap", () => {
+                if(!gameInfo.playing) {
+                    socket.emit("startGame");
+                } else {
+                    socket.emit("stopGame");
+                }
+            });
+            layer.add(startGameButton);
+
+            var possibleModes = ["Classic", "Double Skull", "Spy"];
+            var modeButtons = new Konva.Group({x: 1225, y: (1080/2) - 10 - 80 - 10 - 80 - 40 - 15});
+            for(let i = 0; i < possibleModes.length; i++) {
+                var newModeButton = createButton("rect", possibleModes[i], 1.25, 24);
+                newModeButton.position({x: 0, y: i * -115});
+                newModeButton.getChildren()[0].height(80);
+                newModeButton.getChildren()[1].height(80);
+                newModeButton.getChildren()[0].width(150);
+                newModeButton.getChildren()[1].width(150);
+                newModeButton.getChildren()[0].on("dblclick dbltap", () => {
+                    socket.emit("setMode", possibleModes[i]);
+                });
+                modeButtons.add(newModeButton);
+            }
+            layer.add(modeButtons);
+
+            function updateMenus() {
+                if(leftMenuOpenable) {
+                    let tween = new Konva.Tween({
+                        node: leftMenuButton,
+                        duration: 0.5, 
+                        x: (-1920/2)+125,
+                        easing: Konva.Easings.EaseOut,
+                    });
+                    tween.play();
+                } else {
+                    let tween = new Konva.Tween({
+                        node: leftMenuButton,
+                        duration: 0.5, 
+                        x: -1225,
+                        easing: Konva.Easings.EaseOut,
+                    });
+                    tween.play();
+                }
+                if(rightMenuOpenable) {
+                    let tween = new Konva.Tween({
+                        node: rightMenuButton,
+                        duration: 0.5, 
+                        x: (1920/2)-115,
+                        easing: Konva.Easings.EaseOut,
+                    });
+                    tween.play();
+                } else {
+                    let tween = new Konva.Tween({
+                        node: rightMenuButton,
+                        duration: 0.5, 
+                        x: 1225,
+                        easing: Konva.Easings.EaseOut,
+                    });
+                    tween.play();
+                }
+                if(leftMenuOpen) {
+                    let tween1 = new Konva.Tween({
+                        node: leftMenuButton,
+                        duration: 0.5, 
+                        y: (1080/2)-80-10 - 150*3,
+                        easing: Konva.Easings.EaseOut,
+                    });
+                    tween1.play();
+
+                    let tween = new Konva.Tween({
+                        node: colorButton,
+                        duration: 0.5, 
+                        x: (-1920/2)+90,
+                        easing: Konva.Easings.EaseOut,
+                    });
+                    tween.play();
+
+                    let tween3 = new Konva.Tween({
+                        node: qualityPlusButton,
+                        duration: 0.5, 
+                        x: (-1920/2)+90,
+                        easing: Konva.Easings.EaseOut,
+                    });
+                    tween3.play();
+                    let tween4 = new Konva.Tween({
+                        node: qualityMinusButton,
+                        duration: 0.5, 
+                        x: (-1920/2)+90,
+                        easing: Konva.Easings.EaseOut,
+                    });
+                    tween4.play();
+                } else {
+                    let tween1 = new Konva.Tween({
+                        node: leftMenuButton,
+                        duration: 0.5, 
+                        y: (1080/2)-80-10,
+                        easing: Konva.Easings.EaseOut,
+                    });
+                    tween1.play();
+
+                    let tween = new Konva.Tween({
+                        node: colorButton,
+                        duration: 0.5, 
+                        x: -1225,
+                        easing: Konva.Easings.EaseOut,
+                    });
+                    tween.play();
+
+                    let tween3 = new Konva.Tween({
+                        node: qualityPlusButton,
+                        duration: 0.5, 
+                        x: -1225,
+                        easing: Konva.Easings.EaseOut,
+                    });
+                    tween3.play();
+                    let tween4 = new Konva.Tween({
+                        node: qualityMinusButton,
+                        duration: 0.5, 
+                        x: -1225,
+                        easing: Konva.Easings.EaseOut,
+                    });
+                    tween4.play();
+                }
+                if(rightMenuOpen) {
+                    let tween1 = new Konva.Tween({
+                        node: rightMenuButton,
+                        duration: 0.5, 
+                        y: 1080/2 - 640,
+                        easing: Konva.Easings.EaseOut,
+                    });
+                    tween1.play();
+
+                    let tween = new Konva.Tween({
+                        node: startGameButton,
+                        duration: 0.5, 
+                        x: (1920/2)-150,
+                        easing: Konva.Easings.EaseOut,
+                    });
+                    tween.play();
+
+                    let tween2 = new Konva.Tween({
+                        node: modeButtons,
+                        duration: 0.5, 
+                        x: (1920/2)-150,
+                        easing: Konva.Easings.EaseOut,
+                    });
+                    tween2.play();
+                } else {
+                    let tween1 = new Konva.Tween({
+                        node: rightMenuButton,
+                        duration: 0.5, 
+                        y: (1080/2)-80-10,
+                        easing: Konva.Easings.EaseOut,
+                    });
+                    tween1.play();
+
+                    let tween = new Konva.Tween({
+                        node: startGameButton,
+                        duration: 0.5, 
+                        x: 1225,
+                        easing: Konva.Easings.EaseOut,
+                    });
+                    tween.play();
+
+                    let tween2 = new Konva.Tween({
+                        node: modeButtons,
+                        duration: 0.5, 
+                        x: 1225,
+                        easing: Konva.Easings.EaseOut,
+                    });
+                    tween2.play();
+                }
+            }
+
+
+            var currentCardsText = new Konva.Text({
+                x: -1920/2,
+                y: -145,
+                text: "Cards: 0",
+                fontSize: 64,
+                offset: {x: -16, y: -16},
+                fontFamily: 'Arial',
+                fill: 'white',
+                shadowOffsetX: 3,
+                shadowOffsetY: 3,
+                shadowBlur: 3,
+                listening:false,
+            });
+            layer.add(currentCardsText);
+
+            currentBidText = new Konva.Text({
+                x: 0,
+                y: -700,
+                text: 1,
+                fontSize: 128,
+                offset: {x: -16, y: -16},
+                fontFamily: 'Arial',
+                fill: 'white',
+                shadowOffsetX: 3,
+                shadowOffsetY: 3,
+                shadowBlur: 3,
+                listening:false,
+            });
+            front.add(currentBidText);
+            var currentSkullsText = new Konva.Text({
+                x: 0,
+                y: -700,
+                text: 1,
+                fontSize: 128,
+                offset: {x: -16, y: -16},
+                fontFamily: 'Arial',
+                fill: 'red',
+                shadowOffsetX: 3,
+                shadowOffsetY: 3,
+                shadowBlur: 3,
+                listening:false,
+
+                visible: false,
+            });
+            front.add(currentSkullsText);
+
+            var currentBidding = 1;
+            var biddingGroup = new Konva.Group();
+            var biddingText = new Konva.Text({
+                x: 0,
+                y: 0,
+                //width: 100,
+                //height: 100,
+                align: "center",
+                verticalAlign: "middle",
+                text: 1,
+                fontSize: 128,
+                offset: {x: 50, y: 50},
+                fontFamily: 'Arial',
+                fill: 'white',
+                shadowOffsetX: 3,
+                shadowOffsetY: 3,
+                shadowBlur: 3,
+                listening: false,
+            });
+            biddingGroup.add(biddingText);
+            var passButton = createButton("circle", "Pass", 1.45);
+            passButton.position({x: -500, y: 0});
+            passButton.getChildren()[0].on("click tap", () => {
+                if(gameInfo.playing) {
+                    if(gameInfo.currentTurn == myPlayerID) {
+                        if(gameInfo.state == "addBid") {
+                            socket.emit("betNumber", -1);
+                        }
+                    }
+                }
+            })
+            biddingGroup.add(passButton);
+
+            var bidButton = createButton("circle", "Bid", 1.45);
+            bidButton.position({x: 500, y: 0});
+            bidButton.getChildren()[0].on("click tap", () => {
+                if(gameInfo.playing) {
+                    if(gameInfo.currentTurn == myPlayerID) {
+                        if(gameInfo.state == "addBid" || gameInfo.state == "play") {
+                            socket.emit("betNumber", currentBidding);
+                        }
+                    }
+                }
+            })
+            biddingGroup.add(bidButton);
+
+            var plusButton = createButton("rect", "+", 1.45, 64);
+            plusButton.position({x: 250, y: 0});
+            plusButton.getChildren()[0].on("click tap", () => {
+                if(currentBidding+1 <= getAllPlayedCards()) {
+                    currentBidding++;
+                    biddingText.text(currentBidding);
+                }
+            });
+            biddingGroup.add(plusButton);
+
+            var minusButton = createButton("rect", "-", 1.45, 64);
+            minusButton.position({x: -250, y: 0});
+            minusButton.getChildren()[0].on("click tap", () => {
+                if(currentBidding-1 > Math.max(gameInfo.currentBid, 0)) {
+                    currentBidding--;
+                    biddingText.text(currentBidding);
+                }
+            });
+            biddingGroup.add(minusButton); 
+            front.add(biddingGroup);
+            
+
+            /*
+            objs["-1button"+i] = new Konva.Rect({
+                x: 1625,
+                y: 100 + i*40,
+                width: 30,
+                height: 30,
+                fill: 'red',
+                cornerRadius: 10,
+            });
+            objs["-1button"+i].on("mousedown", () => {
+                objs["moneytext"+i].text(parseInt(objs["moneytext"+i].text())-1);
+                socket.emit("update", {name: "moneytext"+i, text: objs["moneytext"+i].text()});
+            })
+            objs["-1buttontext"+i] = new Konva.Text({
+                x: 1630,
+                y: 105 + i*40,
+                text: " <",
+                fontSize: 25,
+                fontFamily: 'Calibri',
+                fill: 'black',
+                listening:false
+            });
+            */
+
+            stage.draw();
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+            
+
+
+
+
+            //sockets
+            socket = io();
+
+            window.onbeforeunload = function(event)
+            {
+                socket.disconnect();
+                return;
+            };
+
+            //NETCODE
+            socket.on("connect", () => {
+                //CLIENT STUFF SETUP
+                //stage.on("pointermove", () => {
+                //    objs["cursor" + myCursor].position(stage.getPointerPosition());
+                //    socket.emit("update", {name: "cursor" + myCursor, position: stage.getPointerPosition()});
+                //});
+
+                socket.onAny((eventName, ...args) => {
+                    console.log(eventName, args);
+                });
+
+                var receivedFirstTimeSetup = false;
+                socket.on('firstTimeSetup', (data) => {
+                    if(receivedFirstTimeSetup == false) {
+                        receivedFirstTimeSetup = true;
+                    } else {
+                        layer.destroy();
+                        front.destroy();
+                        cardLayer.destroy();
+                        bottomPlayerCardLayer.destroy();
+                        var newText = new Konva.Text({
+                            x: 1920 / 2,
+                            y: 1080 / 2,
+                            text: "Please refresh the page",
+                            fontSize: 128,
+                            fontFamily: 'Arial',
+                            fill: "white",
+                            shadowOffsetX : 1,
+                            shadowOffsetY : 3, 
+                            shadowBlur: 3,
+                            listening: false,
+                        });
+                        newText.x(newText.x() - (newText.width()/2));
+                        background.add(newText);
+                        socket.disconnect();
+                    }
+                });
+                socket.on('disconnect', () => {
+                    layer.destroy();
+                    front.destroy();
+                    cardLayer.destroy();
+                    bottomPlayerCardLayer.destroy();
+                    var newText = new Konva.Text({
+                        x: 1920 / 2,
+                        y: 1080 / 2,
+                        text: "Please refresh the page",
+                        fontSize: 128,
+                        fontFamily: 'Arial',
+                        fill: "white",
+                        shadowOffsetX : 1,
+                        shadowOffsetY : 3, 
+                        shadowBlur: 3,
+                        listening: false,
+                    });
+                    newText.x(newText.x() - (newText.width()/2));
+                    background.add(newText);
+                    socket.disconnect();
+                });
+
+                socket.on("updateModeInfo", (data) => {
+                    for(var prop in data) {
+                        modeInfo[prop] = data[prop];
+                    }
+
+                    updateAllPlayers();
+                })
+                socket.on("showTitle", (text, time) => {
+                    showTitle(text, time);
+                })
+
+                socket.on("updateGameInfo", (data) => {
+                    for(var prop in data) {
+                        gameInfo[prop] = data[prop];
+                    }
+                    gameInfo.currentTurn = parseInt(gameInfo.currentTurn, 10);
+                    gameInfo.currentBid = parseInt(gameInfo.currentBid, 10);
+                    gameInfo.currentBidder = parseInt(gameInfo.currentBidder, 10);
+                    for(var i = 0; i < gameInfo.spies.length; i++) {
+                        gameInfo.spies[i] = parseInt(gameInfo.spies[i]);
+                    }
+                    for(var i = 0; i < gameInfo.canPlayCard.length; i++) {
+                        gameInfo.canPlayCard[i] = parseInt(gameInfo.canPlayCard[i]);
+                    }
+
+                    var playerCount = Object.keys(players).length;
+                    if(playerCount > 4) {
+                        // focus currentPlayersGroupX to new player
+                        if((gameInfo.state == "addBid" || gameInfo.state == "play") && gameInfo.currentTurn != myPlayerID) {
+                            var playerIDs = Object.keys(players);
+                            var currentTurnIndex = playerIDs.findIndex(el => el == gameInfo.currentTurn);
+                            var myPlayerIndex = playerIDs.findIndex(el => el == myPlayerID);
+                            if(currentTurnIndex != -1) {
+                                // this took me like 3 hours
+                                // this is why you need to create a good base before making the game
+                                var offset = 0;
+                                offset = ((currentTurnIndex + ((playerIDs.length-1)-myPlayerIndex))%playerIDs.length) - (playerIDs.length-1)/2 + 0.5;
+                                offset *= -450;
+                                currentPlayersGroupX = offset;
+                            }
+                            updatePlayersGroupX();
+                        }
+                    }
+
+
+
+                    for(var pID in players) {
+                        if(players[pID].cards.length == 0 && gameInfo.playing) {
+                            players[pID].textGraphic.textDecoration("line-through");
+                        } else {
+                            // Text Underline
+                            if((pID == gameInfo.currentTurn)) {
+                                players[pID].textGraphic.textDecoration("underline");
+                            } else {
+                                players[pID].textGraphic.textDecoration("");
+                            }
+                        }
+                        // Player Background Strokes/Outlines
+                        if((pID == gameInfo.currentTurn && gameInfo.state != "play1st") || gameInfo.canPlayCard.indexOf(parseInt(pID)) != -1) {
+                            let tween = new Konva.Tween({
+                                node: players[pID].backgroundGraphic,
+                                duration: 0.25, 
+                                strokeWidth: 6,
+                                easing: Konva.Easings.EaseOut,
+                            });
+                            tween.play();
+                        } else {
+                            let tween = new Konva.Tween({
+                                node: players[pID].backgroundGraphic,
+                                duration: 0.25, 
+                                strokeWidth: 0,
+                                easing: Konva.Easings.EaseOut,
+                            });
+                            tween.play();
+                        }
+                    }
+                    for(var i = 0; i < gameInfo.havePassed.length; i++) {
+                        players[gameInfo.havePassed[i]].textGraphic.textDecoration("line-through");
+                    }
+
+                    // Start/Stop game Button
+                    if(gameInfo.playing) {
+                        startGameButton.getChildren()[1].text("Stop\nGame");
+                        startGameButton.getChildren()[1].fontStyle("bold italic");
+                    } else {
+                        startGameButton.getChildren()[1].text("Start\nGame");
+                        startGameButton.getChildren()[1].fontStyle("");
+
+                    }
+
+
+                    // Bid buttons
+                    var playersWithCards = 0;
+                    for(var pID in players) {
+                        if(players[pID].cards.length > 0) {
+                            playersWithCards++;
+                        }
+                    }
+                    if(gameInfo.playing && (gameInfo.state == "play" || gameInfo.state == "addBid") && getAllPlayedCards() >= playersWithCards && gameInfo.currentTurn == myPlayerID) {
+                        currentBidding = Math.max(gameInfo.currentBid, 0)+1;
+                        biddingText.text(currentBidding);
+                        biddingGroup.position({x: 0, y: 450});
+                        passButton.visible( (gameInfo.state == "addBid") );
+                    } else {
+                        biddingGroup.position({x: 0, y: -700});
+                    }
+
+                    // Visibilities
+                    currentSkullsText.visible(modeInfo.keepGoingAfterSkull && (gameInfo.skullsToTake > 0));
+                    currentBidText.visible((gameInfo.currentBid > 0));
+                    // Positions (fyi this is kinda remains of an old system so thats why its garbage, but it works still)
+                    if(gameInfo.playing && (gameInfo.state == "addBid" || gameInfo.state == "pick" || gameInfo.state == "remove") ) {
+                        var bidX = players[gameInfo.currentBidder].position.x;
+                        if(gameInfo.currentBidder != myPlayerID)
+                            bidX += currentPlayersGroupX;
+                        let tween = new Konva.Tween({
+                            node: currentBidText,
+                            duration: 0.25, 
+                            x: bidX,
+                            y: players[gameInfo.currentBidder].position.y,
+                            easing: Konva.Easings.EaseOut,
+                        });
+                        tween.play();
+                        var bidDelay = 0;
+                        let currentValue = gameInfo.currentBid;
+                        if(gameInfo.state == "pick") bidDelay = 500;
+                        setTimeout(() => {
+                            currentBidText.text(currentValue);
+                        }, bidDelay);
+                        if(gameInfo.currentBidder == myPlayerID) {
+                            let tween2 = new Konva.Tween({
+                                node: currentSkullsText,
+                                duration: 0.25, 
+                                x: players[gameInfo.currentBidder].position.x + modeInfo.myBGRWidth - 115,
+                                y: players[gameInfo.currentBidder].position.y,
+                                easing: Konva.Easings.EaseOut,
+                            });
+                            tween2.play();
+                        } else {
+                            let tween2 = new Konva.Tween({
+                                node: currentSkullsText,
+                                duration: 0.25, 
+                                x: players[gameInfo.currentBidder].position.x + modeInfo.pBGRWidth - 115,
+                                y: players[gameInfo.currentBidder].position.y,
+                                easing: Konva.Easings.EaseOut,
+                            });
+                            tween2.play();
+                        }
+                        var textDelay = 0;
+                        let currentValue2 = gameInfo.skullsToTake;
+                        if(gameInfo.state == "pick") textDelay = 500;
+                        setTimeout(() => {
+                            currentSkullsText.text(currentValue2);
+                        }, textDelay);
+                    }
+
+                    currentCardsText.text("Cards: " + getAllPlayedCards());
+
+                    for(var id in players) {
+                        updateCardStrokes(id);
+                    }
+                });
+                socket.on('setPlayerID', (id) => {
+                    if(players.hasOwnProperty(myPlayerID)) {
+                        players[myPlayerID].textGraphic.off('dblclick dbltap');
+                        // remove from layer and put it back to playersGroup
+                        players[myPlayerID].graphicGroup.remove();
+                        playersGroup.add(players[myPlayerID].graphicGroup);
+                        // put cards back in cardLayer
+                        for(var cardGraphicId in players[myPlayerID].cardGraphics) {
+                            var cardGraphic = players[myPlayerID].cardGraphics[cardGraphicId];
+                            cardGraphic.remove();
+                            cardLayer.add(cardGraphic);
+                        }
+                    }
+
+                    myPlayerID = parseInt(id);
+
+                    if(myPlayerID != -1) {
+                        leftMenuOpenable = true;
+                        rightMenuOpenable = true;
+                        updateMenus();
+
+                        // remove playersGroup stage and put it into layer
+                        players[myPlayerID].graphicGroup.remove();
+                        layer.add(players[myPlayerID].graphicGroup);
+                        // put cards in bottomPlayerCardLayer
+                        for(var cardGraphicId in players[myPlayerID].cardGraphics) {
+                            var cardGraphic = players[myPlayerID].cardGraphics[cardGraphicId];
+                            cardGraphic.remove();
+                            bottomPlayerCardLayer.add(cardGraphic);
+                        }
+
+                        var graphic = players[myPlayerID].textGraphic;
+                        graphic.listening(true);
+                        // Thanks Konva!
+                        // https://konvajs.org/docs/sandbox/Editable_Text.html
+                        graphic.on('dblclick dbltap', () => {
+                            // create textarea over canvas with absolute position
+                        
+                            // first we need to find position for textarea
+                            // how to find it?
+                        
+                            // at first lets find position of text node relative to the stage:
+                            var textPosition = graphic.getAbsolutePosition();
+                        
+                            // then lets find position of stage container on the page:
+                            var stageBox = stage.container().getBoundingClientRect();
+                        
+                            // so position of textarea will be the sum of positions above:
+                            var areaPosition = {
+                              x: stageBox.left + textPosition.x,
+                              y: stageBox.top + textPosition.y,
+                            };
+                        
+                            // create textarea and style it
+                            var textarea = document.createElement('textarea');
+                            document.body.appendChild(textarea);
+                        
+                            textarea.value = graphic.text();
+                            textarea.style.position = 'absolute';
+                            textarea.style.top = areaPosition.y + 'px';
+                            textarea.style.left = areaPosition.x + 'px';
+                            textarea.style.width = graphic.width()+ 'px';
+                            textarea.style.height = graphic.height()+ 'px';
+                            textarea.style.fontSize = "64px";
+                        
+                            textarea.focus();
+                        
+                            textarea.addEventListener('keydown', function (e) {
+                                // hide on enter
+                                if (e.keyCode == 13) {
+                                    e.preventDefault();
+                                    textarea.value = textarea.value.replace(/(\r\n|\n|\r)/gm, "");
+                                    if(textarea.value.length < 3) {
+                                        showTitle("Name must be at least 3 letters", 2000);
+                                    } else if(textarea.value.length < 22) {
+                                        socket.emit("updatePlayer", {name: textarea.value});
+                                        document.body.removeChild(textarea);
+                                    } else {
+                                        showTitle("Name too long", 1000);
+                                    }
+                                } else if(e.keyCode == 27) { // cancel on escape
+                                    document.body.removeChild(textarea);
+                                }
+                            });
+                        });
+                    } else {
+                        leftMenuOpenable = false;
+                        rightMenuOpenable = false;
+                        leftMenuOpen = false;
+                        rightMenuOpen = false;
+                        updateMenus();
+                    }
+                });
+                socket.on('focusPlayer', (data) => {
+                    // copied from somewhere else, so if you change this change it in the other place aswell.
+                    // i know that this is absolutely horrible code, but this is the last feature i am adding,
+                    // then im done with this project. Moving forward, all of my projects will use TypeScript.
+
+                    // focus currentPlayersGroupX to new player
+                    if(gameInfo.currentTurn != myPlayerID) {
+                        var playerIDs = Object.keys(players);
+                        var currentTurnIndex = playerIDs.findIndex(el => el == data.id);
+                        var myPlayerIndex = playerIDs.findIndex(el => el == myPlayerID);
+
+                        // ALTHOUGH I DID ADD THIS ONE
+                        if(currentTurnIndex == myPlayerID)
+                            return;
+
+                        if(currentTurnIndex != -1) {
+                            // this took me like 3 hours
+                            // this is why you need to create a good base before making the game
+                            var offset = 0;
+                            offset = ((currentTurnIndex + ((playerIDs.length-1)-myPlayerIndex))%playerIDs.length) - (playerIDs.length-1)/2 + 0.5;
+                            offset *= -450;
+                            currentPlayersGroupX = offset;
+                        }
+                        updatePlayersGroupX();
+                    }
+                });
+                socket.on('addPlayer', (data) => {
+                    var newPl = addPlayer(data.id);
+                    for(var prop in data) {
+                        if(prop == data) continue;
+                        newPl[prop] = data[prop];
+                    }
+                    setupPlayer(data.id);
+                });
+                socket.on('updateAllPlayers', () => {
+                    updateAllPlayers();
+                });
+                socket.on('updatePlayer', (data) => {
+                    var player = players[data.id];
+                    for(var prop in data) {
+                        if(prop == data) continue;
+                        player[prop] = data[prop];
+                    }
+                    updatePlayer(data.id);
+                });
+                socket.on('removePlayer', (id) => {
+                    removePlayer(id);
+                });
+                socket.on('updateCards', (data) => {
+                    for(var index in data) {
+                        if(index == "id") continue;
+                        for(var prop in data[index]) {
+                            players[data.id].cards[index][prop] = data[index][prop];
+                        }
+                    }
+                    updateCards(data.id);
+                });
+                socket.on('removeCard', (data) => {
+                    removeCard(players[data.id], data.index);
+                    updateCards(data.id);
+                });
+                socket.on('setCards', (data) => {
+                    var player = players[data.id];
+                    while(player.cards.length > 0) {
+                        removeCard(player, 0);
+                    }
+
+                    player.cards = [];
+                    for(var i = 0; i < data.cards.length; i++) {
+                        player.cards[i] = data.cards[i];
+                        player.cardGraphics[i] = addCard(player.cards[i].type, data.id, i);
+                        player.cardGraphics[i].position({x:0, y:-700});
+                    }
+                    updatePlayer(data.id);
+                });
+
+
+                socket.on("shutdown", () => {
+                    socket.disconnect();
+                    window.close();
+                    $("body").append( "<p>Server disconnected.</p>" );
+                });
+
+                //socket.on('showText', (text) => {
+                //    console.log(text);
+                //});
+            }); //this is the end of the master socket.on connect
+        }
+    </script>
+</body>
+</html>
